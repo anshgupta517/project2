@@ -3,13 +3,15 @@ from groq import Groq
 import os
 import requests
 import json
+from datetime import datetime
+import pytz
 
 # Initialize Groq client
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 conversation_history = []
 
-# Agent Function: Weather Lookup
+# Agent Function 1: Weather Lookup
 def get_weather(city):
     """Get weather for a city using wttr.in (free, no API key needed)"""
     try:
@@ -23,10 +25,82 @@ def get_weather(city):
                 "temperature": f"{current['temp_C']}°C ({current['temp_F']}°F)",
                 "condition": current['weatherDesc'][0]['value'],
                 "humidity": f"{current['humidity']}%",
-                "wind": f"{current['windspeedKmph']} km/h"
+                "wind": f"{current['windspeedKmph']} km/h",
+                "feels_like": f"{current['FeelsLikeC']}°C"
             }
             return json.dumps(weather_info)
         return json.dumps({"error": "Could not fetch weather"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+# Agent Function 2: Calculator
+def calculate(expression):
+    """Safely evaluate mathematical expressions"""
+    try:
+        # Remove any potentially dangerous characters
+        allowed_chars = "0123456789+-*/(). "
+        cleaned = ''.join(c for c in expression if c in allowed_chars)
+        
+        # Evaluate safely
+        result = eval(cleaned, {"__builtins__": {}}, {})
+        return json.dumps({
+            "expression": expression,
+            "result": result
+        })
+    except Exception as e:
+        return json.dumps({"error": f"Cannot calculate: {str(e)}"})
+
+# Agent Function 3: World Time
+def get_world_time(city):
+    """Get current time in a city"""
+    try:
+        # Common timezone mappings
+        timezone_map = {
+            "london": "Europe/London",
+            "paris": "Europe/Paris",
+            "new york": "America/New_York",
+            "tokyo": "Asia/Tokyo",
+            "sydney": "Australia/Sydney",
+            "dubai": "Asia/Dubai",
+            "singapore": "Asia/Singapore",
+            "los angeles": "America/Los_Angeles",
+            "chicago": "America/Chicago",
+            "toronto": "America/Toronto",
+            "mumbai": "Asia/Kolkata",
+            "delhi": "Asia/Kolkata",
+            "beijing": "Asia/Shanghai",
+            "moscow": "Europe/Moscow",
+            "berlin": "Europe/Berlin",
+            "madrid": "Europe/Madrid",
+            "rome": "Europe/Rome",
+            "amsterdam": "Europe/Amsterdam",
+            "hong kong": "Asia/Hong_Kong",
+            "bangkok": "Asia/Bangkok",
+            "istanbul": "Europe/Istanbul",
+            "cairo": "Africa/Cairo",
+            "mexico city": "America/Mexico_City",
+            "sao paulo": "America/Sao_Paulo",
+            "buenos aires": "America/Argentina/Buenos_Aires",
+            "johannesburg": "Africa/Johannesburg"
+        }
+        
+        city_lower = city.lower()
+        timezone = timezone_map.get(city_lower)
+        
+        if not timezone:
+            return json.dumps({"error": f"Timezone not found for {city}"})
+        
+        tz = pytz.timezone(timezone)
+        current_time = datetime.now(tz)
+        
+        time_info = {
+            "city": city,
+            "time": current_time.strftime("%I:%M %p"),
+            "date": current_time.strftime("%B %d, %Y"),
+            "day": current_time.strftime("%A"),
+            "timezone": timezone
+        }
+        return json.dumps(time_info)
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -36,13 +110,47 @@ tools = [
         "type": "function",
         "function": {
             "name": "get_weather",
-            "description": "Get current weather information for a city",
+            "description": "Get current weather information for a city. Use this when users ask about weather, temperature, or climate conditions.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "city": {
                         "type": "string",
                         "description": "The city name, e.g., London, New York, Tokyo"
+                    }
+                },
+                "required": ["city"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "calculate",
+            "description": "Perform mathematical calculations. Use this for math problems, percentages, conversions, etc.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "expression": {
+                        "type": "string",
+                        "description": "The mathematical expression to evaluate, e.g., '15 * 20', '100 / 4', '(50 + 30) * 2'"
+                    }
+                },
+                "required": ["expression"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_world_time",
+            "description": "Get the current time and date in any major city. Use this when users ask 'what time is it in...', 'current time in...', etc.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": "The city name, e.g., London, New York, Tokyo, Paris"
                     }
                 },
                 "required": ["city"]
@@ -74,13 +182,13 @@ def voice_chat(audio, history):
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "You are a helpful voice assistant with access to weather information. When users ask about weather, use the get_weather function. Be concise and friendly."},
+                {"role": "system", "content": "You are a helpful voice assistant with access to weather information, calculator, and world time. Use the appropriate tool when users ask relevant questions. Be concise and friendly."},
                 *conversation_history
             ],
             tools=tools,
             tool_choice="auto",
             temperature=0.7,
-            max_tokens=200
+            max_tokens=250
         )
         
         response_message = response.choices[0].message
@@ -92,43 +200,50 @@ def voice_chat(audio, history):
             function_name = tool_call.function.name
             function_args = json.loads(tool_call.function.arguments)
             
+            # Call the appropriate function
             if function_name == "get_weather":
                 function_response = get_weather(function_args["city"])
-                
-                # Add function call to history
-                conversation_history.append({
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": tool_call.id,
-                            "type": "function",
-                            "function": {
-                                "name": function_name,
-                                "arguments": tool_call.function.arguments
-                            }
+            elif function_name == "calculate":
+                function_response = calculate(function_args["expression"])
+            elif function_name == "get_world_time":
+                function_response = get_world_time(function_args["city"])
+            else:
+                function_response = json.dumps({"error": "Unknown function"})
+            
+            # Add function call to history
+            conversation_history.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": tool_call.id,
+                        "type": "function",
+                        "function": {
+                            "name": function_name,
+                            "arguments": tool_call.function.arguments
                         }
-                    ]
-                })
-                
-                conversation_history.append({
-                    "role": "tool",
-                    "content": function_response,
-                    "tool_call_id": tool_call.id
-                })
-                
-                # Get final response with function result
-                final_response = client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=[
-                        {"role": "system", "content": "You are a helpful voice assistant. Present weather information in a natural, conversational way."},
-                        *conversation_history
-                    ],
-                    temperature=0.7,
-                    max_tokens=200
-                )
-                
-                ai_message = final_response.choices[0].message.content
+                    }
+                ]
+            })
+            
+            conversation_history.append({
+                "role": "tool",
+                "content": function_response,
+                "tool_call_id": tool_call.id
+            })
+            
+            # Get final response with function result
+            final_response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": "You are a helpful voice assistant. Present information in a natural, conversational way."},
+                    *conversation_history
+                ],
+                temperature=0.7,
+                max_tokens=250
+            )
+            
+            ai_message = final_response.choices[0].message.content
         else:
             ai_message = response_message.content
         
@@ -181,8 +296,8 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
     
     # Header
     gr.Markdown("""
-    # 🤖 AI Voice Assistant with Agent Functionality
-    **Real-time Weather Information**
+    # 🤖 AI Voice Assistant with Multi-Agent System
+    **Weather | Calculator | World Time | Powered by Groq AI**
     """)
     
     # State to hold conversation history
@@ -207,7 +322,32 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
             with gr.Row():
                 clear_btn = gr.Button("Clear Chat", variant="secondary", size="sm")
         
-        
+        with gr.Column(scale=1):
+            gr.Markdown("""
+            ### 🌤️ Weather Agent
+            - "Weather in London?"
+            - "How's Tokyo today?"
+            
+            ### 🧮 Calculator Agent
+            - "What's 15% of 2500?"
+            - "Calculate 48 * 37"
+            - "What's 1024 / 8?"
+            
+            ### 🌍 World Time Agent
+            - "What time in Tokyo?"
+            - "Current time in Paris?"
+            - "Time in New York?"
+            
+            ### 💬 General Chat
+            - "Tell me a joke"
+            - "How are you?"
+            
+            ---
+            
+            ✅ Voice Recognition  
+            ✅ 3 Agent Functions  
+            ✅ Context Memory  
+            """)
     
     # Event handlers
     audio_input.stop_recording(
