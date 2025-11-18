@@ -5,11 +5,29 @@ import requests
 import json
 from datetime import datetime
 import pytz
+import wikipedia
 
 # Initialize Groq client
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-conversation_history = []
+conversation_history = [    {
+        "type": "function",
+        "function": {
+            "name": "search_wikipedia",
+            "description": "Search Wikipedia for information about any topic - people, places, concepts, events, etc. Use this when users ask 'who is', 'what is', 'tell me about', or want to learn about something.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The topic to search for on Wikipedia, e.g., 'Albert Einstein', 'Quantum Computing', 'Eiffel Tower'"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    }
+]
 
 # Agent Function 1: Weather Lookup
 def get_weather(city):
@@ -50,7 +68,44 @@ def calculate(expression):
     except Exception as e:
         return json.dumps({"error": f"Cannot calculate: {str(e)}"})
 
-# Agent Function 3: World Time
+# Agent Function 4: Wikipedia Search
+def search_wikipedia(query):
+    """Search Wikipedia and return summary"""
+    try:
+        # Set language to English
+        wikipedia.set_lang("en")
+        
+        # Search for the topic
+        search_results = wikipedia.search(query, results=3)
+        
+        if not search_results:
+            return json.dumps({"error": f"No Wikipedia results found for '{query}'"})
+        
+        # Get summary of the first result
+        try:
+            summary = wikipedia.summary(search_results[0], sentences=4, auto_suggest=False)
+            page = wikipedia.page(search_results[0], auto_suggest=False)
+            
+            wiki_info = {
+                "title": page.title,
+                "summary": summary,
+                "url": page.url
+            }
+            return json.dumps(wiki_info)
+        except wikipedia.exceptions.DisambiguationError as e:
+            # If disambiguation, try first option
+            summary = wikipedia.summary(e.options[0], sentences=4, auto_suggest=False)
+            page = wikipedia.page(e.options[0], auto_suggest=False)
+            
+            wiki_info = {
+                "title": page.title,
+                "summary": summary,
+                "url": page.url
+            }
+            return json.dumps(wiki_info)
+            
+    except Exception as e:
+        return json.dumps({"error": f"Wikipedia search failed: {str(e)}"})
 def get_world_time(city):
     """Get current time in a city"""
     try:
@@ -162,6 +217,8 @@ tools = [
 def voice_chat(audio, history):
     """Process voice input and return AI response with agent functionality"""
     
+    global conversation_history
+    
     if audio is None:
         return history, conversation_history
     
@@ -178,17 +235,23 @@ def voice_chat(audio, history):
         # Add to internal history
         conversation_history.append({"role": "user", "content": user_message})
         
+        # Filter history to only include valid messages for API
+        valid_history = []
+        for msg in conversation_history:
+            if msg.get("role") in ["user", "assistant", "system"] and msg.get("content"):
+                valid_history.append({"role": msg["role"], "content": msg["content"]})
+        
         # Step 2: Get AI response with tool calling
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "You are a helpful voice assistant with access to weather information, calculator, and world time. Use the appropriate tool when users ask relevant questions. Be concise and friendly."},
-                *conversation_history
+                {"role": "system", "content": "You are a helpful voice assistant with access to weather information, calculator, world time, and Wikipedia. Use the appropriate tool when users ask relevant questions. Be concise and friendly."},
+                *valid_history
             ],
             tools=tools,
             tool_choice="auto",
             temperature=0.7,
-            max_tokens=250
+            max_tokens=300
         )
         
         response_message = response.choices[0].message
@@ -207,40 +270,37 @@ def voice_chat(audio, history):
                 function_response = calculate(function_args["expression"])
             elif function_name == "get_world_time":
                 function_response = get_world_time(function_args["city"])
+            elif function_name == "search_wikipedia":
+                function_response = search_wikipedia(function_args["query"])
             else:
                 function_response = json.dumps({"error": "Unknown function"})
             
-            # Add function call to history
+            # Add tool call result to simple history (not for API, just for tracking)
             conversation_history.append({
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": tool_call.id,
-                        "type": "function",
-                        "function": {
-                            "name": function_name,
-                            "arguments": tool_call.function.arguments
-                        }
-                    }
-                ]
-            })
-            
-            conversation_history.append({
-                "role": "tool",
-                "content": function_response,
-                "tool_call_id": tool_call.id
+                "role": "tool_result",
+                "content": f"Tool {function_name} returned: {function_response}"
             })
             
             # Get final response with function result
+            # Create a clean message history for this call
+            final_messages = [
+                {"role": "system", "content": "You are a helpful voice assistant. Present information in a natural, conversational way."}
+            ]
+            
+            # Add user message
+            final_messages.append({"role": "user", "content": user_message})
+            
+            # Add tool result as context
+            final_messages.append({
+                "role": "user", 
+                "content": f"Based on this information: {function_response}, please provide a natural response."
+            })
+            
             final_response = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
-                messages=[
-                    {"role": "system", "content": "You are a helpful voice assistant. Present information in a natural, conversational way."},
-                    *conversation_history
-                ],
+                messages=final_messages,
                 temperature=0.7,
-                max_tokens=250
+                max_tokens=300
             )
             
             ai_message = final_response.choices[0].message.content
@@ -253,9 +313,9 @@ def voice_chat(audio, history):
         # Format for Gradio chatbot display (list of tuples)
         chat_display = []
         for msg in conversation_history:
-            if msg["role"] == "user":
+            if msg.get("role") == "user" and msg.get("content"):
                 chat_display.append((msg["content"], None))
-            elif msg["role"] == "assistant" and msg.get("content"):
+            elif msg.get("role") == "assistant" and msg.get("content"):
                 # Update last user message to include AI response
                 if chat_display and chat_display[-1][1] is None:
                     chat_display[-1] = (chat_display[-1][0], msg["content"])
@@ -271,9 +331,9 @@ def voice_chat(audio, history):
         # Format for display
         chat_display = []
         for msg in conversation_history:
-            if msg["role"] == "user":
+            if msg.get("role") == "user" and msg.get("content"):
                 chat_display.append((msg["content"], None))
-            elif msg["role"] == "assistant" and msg.get("content"):
+            elif msg.get("role") == "assistant" and msg.get("content"):
                 if chat_display and chat_display[-1][1] is None:
                     chat_display[-1] = (chat_display[-1][0], msg["content"])
                 else:
@@ -297,7 +357,7 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
     # Header
     gr.Markdown("""
     # 🤖 AI Voice Assistant with Multi-Agent System
-    **Weather | Calculator | World Time | Powered by Groq AI**
+    **Weather | Calculator | World Time | Wikipedia **
     """)
     
     # State to hold conversation history
@@ -322,32 +382,7 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
             with gr.Row():
                 clear_btn = gr.Button("Clear Chat", variant="secondary", size="sm")
         
-        with gr.Column(scale=1):
-            gr.Markdown("""
-            ### 🌤️ Weather Agent
-            - "Weather in London?"
-            - "How's Tokyo today?"
-            
-            ### 🧮 Calculator Agent
-            - "What's 15% of 2500?"
-            - "Calculate 48 * 37"
-            - "What's 1024 / 8?"
-            
-            ### 🌍 World Time Agent
-            - "What time in Tokyo?"
-            - "Current time in Paris?"
-            - "Time in New York?"
-            
-            ### 💬 General Chat
-            - "Tell me a joke"
-            - "How are you?"
-            
-            ---
-            
-            ✅ Voice Recognition  
-            ✅ 3 Agent Functions  
-            ✅ Context Memory  
-            """)
+
     
     # Event handlers
     audio_input.stop_recording(
