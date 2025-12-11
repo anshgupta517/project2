@@ -396,10 +396,25 @@ def voice_chat(audio, history, enable_tts):
                 model="whisper-large-v3",
             )
         
-        user_message = transcription.text
-        
-        # Add to internal history
-        conversation_history.append({"role": "user", "content": user_message})
+        user_message = transcription.text.strip()
+
+        # Add to internal history with simple dedupe to avoid duplicate transcriptions
+        # If the last user message is identical to the new transcription, skip appending.
+        try:
+            last_user = None
+            for msg in reversed(conversation_history):
+                if msg.get("role") == "user" and msg.get("content"):
+                    last_user = msg.get("content").strip()
+                    break
+
+            if last_user is None or last_user != user_message:
+                conversation_history.append({"role": "user", "content": user_message})
+            else:
+                # Duplicate detected — ignore this transcription to prevent double input
+                print("[groq_voice_assistant] Ignored duplicate user transcription")
+        except Exception:
+            # On any unexpected error, fall back to appending the message
+            conversation_history.append({"role": "user", "content": user_message})
         
         # Filter history to only include valid messages for API (only user and assistant)
         valid_history = []
