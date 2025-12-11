@@ -6,25 +6,9 @@ import json
 from datetime import datetime
 import pytz
 import wikipedia
-import edge_tts
-import asyncio
-from newsapi import NewsApiClient
 import tempfile
 from dotenv import load_dotenv
-
-# Optional offline TTS fallback
-try:
-    import pyttsx3
-    HAVE_PYTTSX3 = True
-except Exception:
-    HAVE_PYTTSX3 = False
-
-# Optional online fallback (gTTS)
-try:
-    from gtts import gTTS
-    HAVE_GTTS = True
-except Exception:
-    HAVE_GTTS = False
+from gtts import gTTS
 
 # Load environment variables from .env file
 load_dotenv()
@@ -33,12 +17,7 @@ load_dotenv()
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 # Initialize NewsAPI client (get free API key from https://newsapi.org/)
-# For now, using a placeholder - replace with your API key
 NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "your_news_api_key_here")
-try:
-    newsapi = NewsApiClient(api_key=NEWS_API_KEY)
-except:
-    newsapi = None
 
 conversation_history = []
 
@@ -171,46 +150,31 @@ def search_wikipedia(query):
     except Exception as e:
         return json.dumps({"error": f"Wikipedia search failed: {str(e)}"})
 
-# NEW Agent Function 5: News Headlines
+# Agent Function 5: News Headlines
 def get_news(category="general"):
     """Get latest news headlines"""
     try:
-        # Fallback to RSS feed if NewsAPI not available
-        if not newsapi or NEWS_API_KEY == "your_news_api_key_here":
-            # Using BBC RSS feed as fallback
-            url = "https://feeds.bbci.co.uk/news/rss.xml"
-            response = requests.get(url, timeout=5)
-            if response.status_code == 200:
-                # Simple parsing of RSS feed
-                import xml.etree.ElementTree as ET
-                root = ET.fromstring(response.content)
-                headlines = []
-                for item in root.findall('.//item')[:5]:
-                    title = item.find('title').text
-                    headlines.append(title)
-                
-                return json.dumps({
-                    "headlines": headlines,
-                    "source": "BBC News",
-                    "count": len(headlines)
-                })
-        else:
-            # Use NewsAPI
-            top_headlines = newsapi.get_top_headlines(
-                language='en',
-                page_size=5
-            )
-            
-            headlines = [article['title'] for article in top_headlines['articles'][:5]]
+        # Using BBC RSS feed
+        url = "https://feeds.bbci.co.uk/news/rss.xml"
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            # Simple parsing of RSS feed
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(response.content)
+            headlines = []
+            for item in root.findall('.//item')[:5]:
+                title = item.find('title').text
+                headlines.append(title)
             
             return json.dumps({
                 "headlines": headlines,
+                "source": "BBC News",
                 "count": len(headlines)
             })
     except Exception as e:
         return json.dumps({"error": f"Could not fetch news: {str(e)}"})
 
-# NEW Agent Function 6: Currency Converter
+# Agent Function 6: Currency Converter
 def convert_currency(amount, from_currency, to_currency):
     """Convert currency using free exchange rate API"""
     try:
@@ -237,7 +201,7 @@ def convert_currency(amount, from_currency, to_currency):
     except Exception as e:
         return json.dumps({"error": str(e)})
 
-# NEW Agent Function 7: Dictionary
+# Agent Function 7: Dictionary
 def get_definition(word):
     """Get word definition using Free Dictionary API"""
     try:
@@ -267,57 +231,20 @@ def get_definition(word):
     except Exception as e:
         return json.dumps({"error": str(e)})
 
-# Text-to-Speech Function
-async def text_to_speech_async(text, voice="en-US-AriaNeural"):
-    """Convert text to speech using Edge TTS"""
+# Text-to-Speech Function using gTTS (Google TTS)
+def text_to_speech(text):
+    """Convert text to speech using Google TTS"""
     try:
-        # Create a temporary file
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
         output_file = temp_file.name
         temp_file.close()
-
-        communicate = edge_tts.Communicate(text, voice)
-        await communicate.save(output_file)
+        
+        tts = gTTS(text=text, lang='en', slow=False)
+        tts.save(output_file)
         return output_file
     except Exception as e:
         print(f"TTS Error: {str(e)}")
-        # Fallback: try offline pyttsx3 if available
-        if HAVE_PYTTSX3:
-            try:
-                return await asyncio.to_thread(_pyttsx3_save, text)
-            except Exception as e2:
-                print(f"Pyttsx3 fallback failed: {e2}")
         return None
-
-
-def _pyttsx3_save(text):
-    """Save TTS using pyttsx3 to a temporary WAV file (blocking)."""
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
-    output_file = temp_file.name
-    temp_file.close()
-
-    engine = pyttsx3.init()
-    engine.setProperty('rate', 160)
-    engine.save_to_file(text, output_file)
-    engine.runAndWait()
-    try:
-        engine.stop()
-    except Exception:
-        pass
-    return output_file
-
-def text_to_speech(text, voice="en-US-AriaNeural"):
-    """Synchronous wrapper for text_to_speech"""
-    return asyncio.run(text_to_speech_async(text, voice))
-
-
-def _gtts_save(text, lang='en'):
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
-    output_file = temp_file.name
-    temp_file.close()
-    tts = gTTS(text=text, lang=lang)
-    tts.save(output_file)
-    return output_file
 
 # Define tools for the LLM
 tools = [
@@ -450,7 +377,7 @@ tools = [
     }
 ]
 
-def voice_chat(audio, history, enable_tts, voice_selection):
+def voice_chat(audio, history, enable_tts):
     """Process voice input and return AI response with agent functionality"""
     
     global conversation_history
@@ -474,10 +401,10 @@ def voice_chat(audio, history, enable_tts, voice_selection):
         # Add to internal history
         conversation_history.append({"role": "user", "content": user_message})
         
-        # Filter history to only include valid messages for API
+        # Filter history to only include valid messages for API (only user and assistant)
         valid_history = []
         for msg in conversation_history:
-            if msg.get("role") in ["user", "assistant", "system"] and msg.get("content"):
+            if msg.get("role") in ["user", "assistant"] and msg.get("content"):
                 valid_history.append({"role": msg["role"], "content": msg["content"]})
         
         status = "🤖 Processing..."
@@ -528,12 +455,6 @@ def voice_chat(audio, history, enable_tts, voice_selection):
             else:
                 function_response = json.dumps({"error": "Unknown function"})
             
-            # Add tool call result to simple history (as assistant message for display)
-            conversation_history.append({
-                "role": "assistant",
-                "content": f"Tool {function_name} returned: {function_response}"
-            })
-            
             # Get final response with function result
             final_messages = [
                 {"role": "system", "content": "You are a helpful voice assistant. Present information in a natural, conversational way. Keep responses concise."}
@@ -566,46 +487,18 @@ def voice_chat(audio, history, enable_tts, voice_selection):
         audio_output = None
         if enable_tts and ai_message:
             status = "🔊 Generating speech..."
-            audio_output = text_to_speech(ai_message, voice_selection)
+            audio_output = text_to_speech(ai_message)
         
-        # Format chat for Gradio depending on Gradio version
-        def gradio_supports_messages_format():
-            try:
-                ver = getattr(gr, "__version__", "")
-                parts = ver.split('.')
-                major = int(parts[0]) if parts else 0
-                minor = int(parts[1]) if len(parts) > 1 else 0
-                # Gradio switched to message dicts around 4.44+
-                return (major > 4) or (major == 4 and minor >= 44)
-            except Exception:
-                return False
-
-        if gradio_supports_messages_format():
-            # Newer Gradio expects a list of dicts like {role, content}
-            chat_display = []
-            for msg in conversation_history:
-                role = msg.get("role")
-                content = msg.get("content")
-                if not role or not content:
-                    continue
-                if role not in ["user", "assistant", "system"]:
-                    role = "assistant"
-                chat_display.append({"role": role, "content": content})
-        else:
-            # Older Gradio (like 4.16.0) expects list of [user_text, bot_text] tuples
-            chat_display = []
-            for msg in conversation_history:
-                role = msg.get("role")
-                content = msg.get("content")
-                if not role or not content:
-                    continue
-                if role == "user":
-                    chat_display.append([content, None])
-                elif role == "assistant":
-                    if chat_display and chat_display[-1][1] is None:
-                        chat_display[-1][1] = content
-                    else:
-                        chat_display.append([None, content])
+        # Format for Gradio chatbot display (list of [user, bot] pairs)
+        chat_display = []
+        for msg in conversation_history:
+            if msg.get("role") == "user" and msg.get("content"):
+                chat_display.append([msg["content"], None])
+            elif msg.get("role") == "assistant" and msg.get("content"):
+                if chat_display and chat_display[-1][1] is None:
+                    chat_display[-1][1] = msg["content"]
+                else:
+                    chat_display.append([None, msg["content"]])
         
         status = "✅ Complete"
         
@@ -615,41 +508,16 @@ def voice_chat(audio, history, enable_tts, voice_selection):
         error_msg = f"Error: {str(e)}"
         conversation_history.append({"role": "assistant", "content": error_msg})
         
-        # Format for display depending on Gradio version
-        def gradio_supports_messages_format():
-            try:
-                ver = getattr(gr, "__version__", "")
-                parts = ver.split('.')
-                major = int(parts[0]) if parts else 0
-                minor = int(parts[1]) if len(parts) > 1 else 0
-                return (major > 4) or (major == 4 and minor >= 44)
-            except Exception:
-                return False
-
-        if gradio_supports_messages_format():
-            chat_display = []
-            for msg in conversation_history:
-                role = msg.get("role")
-                content = msg.get("content")
-                if not role or not content:
-                    continue
-                if role not in ["user", "assistant", "system"]:
-                    role = "assistant"
-                chat_display.append({"role": role, "content": content})
-        else:
-            chat_display = []
-            for msg in conversation_history:
-                role = msg.get("role")
-                content = msg.get("content")
-                if not role or not content:
-                    continue
-                if role == "user":
-                    chat_display.append([content, None])
-                elif role == "assistant":
-                    if chat_display and chat_display[-1][1] is None:
-                        chat_display[-1][1] = content
-                    else:
-                        chat_display.append([None, content])
+        # Format for display
+        chat_display = []
+        for msg in conversation_history:
+            if msg.get("role") == "user" and msg.get("content"):
+                chat_display.append([msg["content"], None])
+            elif msg.get("role") == "assistant" and msg.get("content"):
+                if chat_display and chat_display[-1][1] is None:
+                    chat_display[-1][1] = msg["content"]
+                else:
+                    chat_display.append([None, msg["content"]])
         
         return chat_display, conversation_history, None, "❌ Error"
 
@@ -720,21 +588,7 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
             enable_tts = gr.Checkbox(
                 label="Enable Voice Response",
                 value=True,
-                info="AI will respond with voice"
-            )
-            
-            voice_selection = gr.Dropdown(
-                label="Voice Selection",
-                choices=[
-                    "en-US-AriaNeural",
-                    "en-US-GuyNeural",
-                    "en-GB-SoniaNeural",
-                    "en-GB-RyanNeural",
-                    "en-AU-NatashaNeural",
-                    "en-IN-NeerjaNeural"
-                ],
-                value="en-US-AriaNeural",
-                info="Choose AI voice"
+                info="AI will respond with voice (Google TTS)"
             )
             
             gr.Markdown("### 📋 Example Queries")
@@ -753,13 +607,13 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
             ✅ Voice Input & Output
             ✅ 7 AI Agents
             ✅ Real-time Processing
-            ✅ Multi-language Voices
+            ✅ Google Text-to-Speech
             """)
     
     # Event handlers
     audio_input.stop_recording(
         voice_chat,
-        inputs=[audio_input, state, enable_tts, voice_selection],
+        inputs=[audio_input, state, enable_tts],
         outputs=[chatbot, state, audio_output, status_box]
     )
     
