@@ -412,6 +412,19 @@ def voice_chat(audio, history, enable_tts):
             else:
                 # Duplicate detected — ignore this transcription to prevent double input
                 print("[groq_voice_assistant] Ignored duplicate user transcription")
+                # Build chat display from existing history and return early to avoid processing duplicate
+                chat_display = []
+                for msg in conversation_history:
+                    if msg.get("role") == "user" and msg.get("content"):
+                        chat_display.append([msg["content"], None])
+                    elif msg.get("role") == "assistant" and msg.get("content"):
+                        if chat_display and chat_display[-1][1] is None:
+                            chat_display[-1][1] = msg["content"]
+                        else:
+                            chat_display.append([None, msg["content"]])
+
+                status = "⚪ Ready"
+                return chat_display, conversation_history, None, status
         except Exception:
             # On any unexpected error, fall back to appending the message
             conversation_history.append({"role": "user", "content": user_message})
@@ -425,17 +438,58 @@ def voice_chat(audio, history, enable_tts):
         status = "🤖 Processing..."
         
         # Step 2: Get AI response with tool calling
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": "You are a helpful voice assistant with access to weather, calculator, world time, Wikipedia, news, currency conversion, and dictionary. Use the appropriate tool when users ask relevant questions. Be concise and friendly."},
-                *valid_history
-            ],
-            tools=tools,
-            tool_choice="auto",
-            temperature=0.7,
-            max_tokens=300
-        )
+        try:
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": "You are a helpful voice assistant with access to weather, calculator, world time, Wikipedia, news, currency conversion, and dictionary. Use the appropriate tool when users ask relevant questions. Be concise and friendly."},
+                    *valid_history
+                ],
+                tools=tools,
+                tool_choice="auto",
+                temperature=0.7,
+                max_tokens=300
+            )
+        except Exception as e:
+            # If the model / API fails to call a tool (e.g. function-calling error), fallback locally for common queries
+            err_str = str(e)
+            print(f"[groq_voice_assistant] Chat completion failed: {err_str}")
+
+            # Heuristic: if user asked to 'tell me about' or similar, run local wikipedia search
+            lowered = user_message.lower()
+            if any(k in lowered for k in ("tell me about", "tell me something about", "who is", "what is", "what are")):
+                wiki_result = search_wikipedia(user_message)
+                try:
+                    wiki_json = json.loads(wiki_result)
+                    if "error" not in wiki_json:
+                        ai_message = f"{wiki_json.get('title')}: {wiki_json.get('summary')} (More: {wiki_json.get('url')})"
+                    else:
+                        ai_message = wiki_json.get("error")
+                except Exception:
+                    ai_message = wiki_result
+
+                conversation_history.append({"role": "assistant", "content": ai_message})
+
+                # Generate TTS if enabled
+                audio_output = None
+                if enable_tts and ai_message:
+                    audio_output = text_to_speech(ai_message)
+
+                # Format chat display and return
+                chat_display = []
+                for msg in conversation_history:
+                    if msg.get("role") == "user" and msg.get("content"):
+                        chat_display.append([msg["content"], None])
+                    elif msg.get("role") == "assistant" and msg.get("content"):
+                        if chat_display and chat_display[-1][1] is None:
+                            chat_display[-1][1] = msg["content"]
+                        else:
+                            chat_display.append([None, msg["content"]])
+
+                status = "✅ Complete"
+                return chat_display, conversation_history, audio_output, status
+            # If not a wikipedia-like query, re-raise to let outer handler catch and show an error
+            raise
         
         response_message = response.choices[0].message
         
@@ -557,7 +611,7 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
     
     # Header
     gr.Markdown("""
-    # 🤖 AI Voice Assistant with Multi-Agent System
+    # AI Voice Assistant with Multi-Agent System
     **7 Agents:** Weather | Calculator | World Time | Wikipedia | News | Currency | Dictionary
     """)
     
@@ -606,24 +660,6 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
                 info="AI will respond with voice (Google TTS)"
             )
             
-            gr.Markdown("### 📋 Example Queries")
-            gr.Markdown("""
-            - "What's the weather in London?"
-            - "Calculate 15 times 20"
-            - "What time is it in Tokyo?"
-            - "Tell me about Albert Einstein"
-            - "What's the latest news?"
-            - "Convert 100 USD to EUR"
-            - "Define serendipity"
-            """)
-            
-            gr.Markdown("### 🎯 Features")
-            gr.Markdown("""
-            ✅ Voice Input & Output
-            ✅ 7 AI Agents
-            ✅ Real-time Processing
-            ✅ Google Text-to-Speech
-            """)
     
     # Event handlers
     audio_input.stop_recording(
