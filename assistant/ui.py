@@ -1,3 +1,9 @@
+import os
+
+# Disable Gradio analytics to avoid outgoing telemetry requests that may hang
+# Set before importing gradio so the analytics thread is not started.
+os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "false")
+
 import gradio as gr
 from assistant.core import voice_chat, clear_conversation
 

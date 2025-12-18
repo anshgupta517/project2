@@ -27,9 +27,11 @@ def voice_chat(audio, history, enable_tts):
     conversation_history = assistant.conversation_history
 
     if audio is None:
+        print("[voice_chat] No audio provided")
         return history, conversation_history, None, "⚪ Ready"
 
     try:
+        print("[voice_chat] Transcribing audio...")
         status = "🎤 Transcribing..."
 
         # Step 1: Transcribe audio
@@ -41,6 +43,8 @@ def voice_chat(audio, history, enable_tts):
 
         user_message = transcription.text.strip()
 
+        print(f"[voice_chat] Transcription: {user_message}")
+
         # Add to internal history with simple dedupe
         try:
             last_user = None
@@ -50,15 +54,17 @@ def voice_chat(audio, history, enable_tts):
                     break
 
             if last_user is None or last_user != user_message:
+                print(f"[voice_chat] Adding to conversation history: {user_message}")
                 conversation_history.append({"role": "user", "content": user_message})
             else:
                 # Duplicate detected — ignore this transcription to prevent double input
-                print("[groq_voice_assistant] Ignored duplicate user transcription")
+                print(f"[voice_chat] Ignored duplicate user transcription: {user_message}")
                 chat_display = _build_chat_display(conversation_history)
 
                 status = "⚪ Ready"
                 return chat_display, conversation_history, None, status
-        except Exception:
+        except Exception as e:
+            print(f"[voice_chat] Error when adding to conversation history: {str(e)}")
             conversation_history.append({"role": "user", "content": user_message})
 
         # Filter history to only include valid messages for API (only user and assistant)
@@ -66,6 +72,8 @@ def voice_chat(audio, history, enable_tts):
         for msg in conversation_history:
             if msg.get("role") in ["user", "assistant"] and msg.get("content"):
                 valid_history.append({"role": msg["role"], "content": msg["content"]})
+
+        print(f"[voice_chat] Valid history: {valid_history}")
 
         status = "🤖 Processing..."
 
@@ -83,8 +91,7 @@ def voice_chat(audio, history, enable_tts):
                 max_tokens=300
             )
         except Exception as e:
-            err_str = str(e)
-            print(f"[groq_voice_assistant] Chat completion failed: {err_str}")
+            print(f"[voice_chat] Chat completion failed: {str(e)}")
 
             lowered = user_message.lower()
             if any(k in lowered for k in ("tell me about", "tell me something about", "who is", "what is", "what are")):
@@ -92,7 +99,7 @@ def voice_chat(audio, history, enable_tts):
                 try:
                     wiki_json = json.loads(wiki_result)
                     if "error" not in wiki_json:
-                        ai_message = f"{wiki_json.get('title')}: {wiki_json.get('summary')} (More: {wiki_json.get('url')})"
+                        ai_message = f"{wiki_json.get('title')}: {wiki_json.get('summary')} (More: {wiki_json.get('url', '')})"
                     else:
                         ai_message = wiki_json.get("error")
                 except Exception:
@@ -102,6 +109,7 @@ def voice_chat(audio, history, enable_tts):
 
                 audio_output = None
                 if enable_tts and ai_message:
+                    print(f"[voice_chat] Generating speech from: {ai_message}")
                     audio_output = tts_module.text_to_speech(ai_message)
 
                 chat_display = _build_chat_display(conversation_history)
@@ -114,8 +122,9 @@ def voice_chat(audio, history, enable_tts):
 
         # Step 3: Handle tool calls
         if getattr(response_message, "tool_calls", None):
+            print("[voice_chat] Using tools...")
             status = "🔧 Using tools..."
-            tool_call = response_message.tool_calls[0]
+            tool_call = response_message.tool_calls[0] if response_message.tool_calls else None
             function_name = tool_call.function.name
             function_args = json.loads(tool_call.function.arguments)
 
@@ -159,7 +168,7 @@ def voice_chat(audio, history, enable_tts):
                 ai_message = final_response.choices[0].message.content
             except Exception as e_final:
                 # If the final model call fails (tool-use / generation errors), fallback
-                print(f"[core] Final response creation failed: {str(e_final)}")
+                print(f"[voice_chat] Final response creation failed: {str(e_final)}")
                 try:
                     parsed = json.loads(function_response)
                     if isinstance(parsed, dict) and "error" not in parsed:
@@ -180,11 +189,13 @@ def voice_chat(audio, history, enable_tts):
         else:
             ai_message = response_message.content
 
+        print(f"[voice_chat] AI message: {ai_message}")
+
         conversation_history.append({"role": "assistant", "content": ai_message})
 
         audio_output = None
         if enable_tts and ai_message:
-            status = "🔊 Generating speech..."
+            print(f"[voice_chat] Generating speech from: {ai_message}")
             audio_output = tts_module.text_to_speech(ai_message)
 
         chat_display = _build_chat_display(conversation_history)
@@ -193,6 +204,7 @@ def voice_chat(audio, history, enable_tts):
         return chat_display, conversation_history, audio_output, status
 
     except Exception as e:
+        print(f"[voice_chat] Error in voice chat: {str(e)}")
         error_msg = f"Error: {str(e)}"
         conversation_history.append({"role": "assistant", "content": error_msg})
         chat_display = _build_chat_display(conversation_history)
