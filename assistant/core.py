@@ -149,14 +149,34 @@ def voice_chat(audio, history, enable_tts):
                 "content": f"Based on this information: {function_response}, please provide a natural response."
             })
 
-            final_response = assistant.client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=final_messages,
-                temperature=0.7,
-                max_tokens=300
-            )
-
-            ai_message = final_response.choices[0].message.content
+            try:
+                final_response = assistant.client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=final_messages,
+                    temperature=0.7,
+                    max_tokens=300
+                )
+                ai_message = final_response.choices[0].message.content
+            except Exception as e_final:
+                # If the final model call fails (tool-use / generation errors), fallback
+                print(f"[core] Final response creation failed: {str(e_final)}")
+                try:
+                    parsed = json.loads(function_response)
+                    if isinstance(parsed, dict) and "error" not in parsed:
+                        # Wikipedia-like result
+                        if "title" in parsed and "summary" in parsed:
+                            ai_message = f"{parsed.get('title')}: {parsed.get('summary')} (More: {parsed.get('url', '')})"
+                        # News headlines
+                        elif "headlines" in parsed:
+                            ai_message = "Top headlines: " + "; ".join(parsed.get('headlines', []))
+                        # Currency / simple numeric responses
+                        else:
+                            ai_message = str(parsed)
+                    else:
+                        ai_message = parsed.get("error") if isinstance(parsed, dict) else str(parsed)
+                except Exception:
+                    # As a last resort, return the raw function response string
+                    ai_message = function_response
         else:
             ai_message = response_message.content
 
